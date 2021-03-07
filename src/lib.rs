@@ -278,9 +278,6 @@ pub fn pyexc_macro(input: TokenStream) -> TokenStream {
     let base_exc_use = impl_use_base_exc(&inherits_spec);
 
     let tokens = quote! {
-        use pyo3::PyErr;
-
-
         mod #module_name {
             use pyo3::create_exception;
             use pyo3::exceptions::PyException;
@@ -289,8 +286,8 @@ pub fn pyexc_macro(input: TokenStream) -> TokenStream {
             #(#python_exceptions)*
         }
 
-        impl std::convert::From<#enum_name> for PyErr {
-            fn from(err: #enum_name) -> PyErr {
+        impl std::convert::From<#enum_name> for pyo3::PyErr {
+            fn from(err: #enum_name) -> pyo3::PyErr {
                 match err {
                     #(#exception_formats),*
                 }
