@@ -5,7 +5,7 @@ use syn::{
     FieldsNamed, FieldsUnnamed, Variant,
 };
 use syn::{Fields, ItemEnum, MetaNameValue};
-use syn::{Ident, Lit, LitStr};
+use syn::{Ident, Lit, LitStr, Token};
 
 struct Format {
     message: LitStr,
@@ -31,14 +31,15 @@ struct Base {
 impl Parse for Base {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let module = input.parse::<MetaNameValue>()?;
-        let inherits = input.parse::<MetaNameValue>();
-        let inherits = match inherits {
+        input.parse::<Token![,]>()?;
+        let inherits = match input.parse::<MetaNameValue>() {
             Ok(mnv) => match mnv.lit {
                 Lit::Str(litstr) => Some(litstr.value()),
                 _ => panic!("`inherits` argument of `base` must be a string."),
             },
             Err(_) => None,
         };
+
         Ok(Base { module, inherits })
     }
 }
