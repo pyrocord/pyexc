@@ -31,13 +31,17 @@ struct Base {
 impl Parse for Base {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let module = input.parse::<MetaNameValue>()?;
-        input.parse::<Token![,]>()?;
-        let inherits = match input.parse::<MetaNameValue>() {
-            Ok(mnv) => match mnv.lit {
-                Lit::Str(litstr) => Some(litstr.value()),
-                _ => panic!("`inherits` argument of `base` must be a string."),
+        let inherits = match input.parse::<Token![,]>() {
+            Ok(_) => {
+                match input.parse::<MetaNameValue>() {
+                    Ok(mnv) => match mnv.lit {
+                        Lit::Str(litstr) => Some(litstr.value()),
+                        _ => panic!("`inherits` argument of `base` must be a string."),
+                    },
+                    Err(_) => panic!("expected `inherits` argument after comma."),
+                }
             },
-            Err(_) => None,
+            Err(_) => None
         };
 
         Ok(Base { module, inherits })
