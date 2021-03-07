@@ -49,7 +49,6 @@ impl Parse for Base {
 }
 
 fn impl_unit(
-    module_name: &Ident,
     enum_name: &Ident,
     variant: &Variant,
     format_attribute: &Format,
@@ -60,12 +59,11 @@ fn impl_unit(
     let fmt = &format_attribute.message;
 
     quote! {
-        #enum_name::#variant_name => self::#module_name::#py_exc_name::new_err(#fmt)
+        Self::#variant_name => #py_exc_name::new_err(#fmt)
     }
 }
 
 fn impl_unnamed_fields(
-    module_name: &Ident,
     enum_name: &Ident,
     variant: &Variant,
     fields: &FieldsUnnamed,
@@ -83,8 +81,8 @@ fn impl_unnamed_fields(
     let fmt = &format_attribute.message;
 
     quote! {
-        #enum_name::#variant_name(#(#field_names),*) =>
-            self::#module_name::#py_exc_name::new_err(
+        Self::#variant_name(#(#field_names),*) =>
+            #py_exc_name::new_err(
                 format!(
                     #fmt,
                     #(#field_names),*
@@ -94,7 +92,6 @@ fn impl_unnamed_fields(
 }
 
 fn impl_named_fields(
-    module_name: &Ident,
     enum_name: &Ident,
     variant: &Variant,
     fields: &FieldsNamed,
@@ -111,8 +108,8 @@ fn impl_named_fields(
     let fmt = &format_attribute.message;
 
     quote! {
-        #enum_name::#variant_name(#(#field_names),*) =>
-            self::#module_name::#py_exc_name::new_err(
+        Self::#variant_name(#(#field_names),*) =>
+            #py_exc_name::new_err(
                 format!(
                     #fmt,
                     #(#field_names = #field_names),*
@@ -246,7 +243,6 @@ pub fn pyexc_macro(input: TokenStream) -> TokenStream {
 
         exception_formats.push(match &variant.fields {
             Fields::Unnamed(fields) => impl_unnamed_fields(
-                &module_name,
                 &enum_name,
                 variant,
                 fields,
@@ -254,7 +250,6 @@ pub fn pyexc_macro(input: TokenStream) -> TokenStream {
                 &is_base,
             ),
             Fields::Named(fields) => impl_named_fields(
-                &module_name,
                 &enum_name,
                 variant,
                 fields,
@@ -262,7 +257,6 @@ pub fn pyexc_macro(input: TokenStream) -> TokenStream {
                 &is_base,
             ),
             Fields::Unit => impl_unit(
-                &module_name,
                 &enum_name,
                 variant,
                 &format_attribute,
@@ -281,6 +275,8 @@ pub fn pyexc_macro(input: TokenStream) -> TokenStream {
 
     let base_exc_use = impl_use_base_exc(&inherits_spec);
 
+    // Into is implemented to be able to refer to Self vs self.
+    // TODO: implement a custom trait instead. Requires moving macro to a sub-crate.
     let tokens = quote! {
         mod #module_name {
             use pyo3::create_exception;
@@ -290,11 +286,18 @@ pub fn pyexc_macro(input: TokenStream) -> TokenStream {
             #(#python_exceptions)*
         }
 
-        impl std::convert::From<#enum_name> for pyo3::PyErr {
-            fn from(err: #enum_name) -> pyo3::PyErr {
-                match err {
+        impl #enum_name {
+            fn into_pyerr(self) -> pyo3::PyErr {
+                use self::#module_name::*;
+                match self {
                     #(#exception_formats),*
                 }
+            }
+        }
+
+        impl std::convert::From<#enum_name> for pyo3::PyErr {
+            fn from(err: #enum_name) -> pyo3::PyErr {
+                err.into_pyerr()
             }
         }
     };
