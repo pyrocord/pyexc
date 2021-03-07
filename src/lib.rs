@@ -2,10 +2,10 @@ use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{
     parse::{Parse, ParseStream},
-    FieldsUnnamed, FieldsNamed, Variant,
+    FieldsNamed, FieldsUnnamed, Variant,
 };
 use syn::{Fields, ItemEnum, MetaNameValue};
-use syn::{Ident, LitStr, Lit};
+use syn::{Ident, Lit, LitStr};
 
 struct Format {
     message: LitStr,
@@ -18,14 +18,28 @@ impl Parse for Format {
     }
 }
 
+struct Inherits {
+    module: Option<String>,
+    exception: String,
+}
+
 struct Base {
     module: MetaNameValue,
+    inherits: Option<String>,
 }
 
 impl Parse for Base {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let module = input.parse::<MetaNameValue>()?;
-        Ok(Base { module })
+        let inherits = input.parse::<MetaNameValue>();
+        let inherits = match inherits {
+            Ok(mnv) => match mnv.lit {
+                Lit::Str(litstr) => Some(litstr.value()),
+                _ => panic!("`inherits` argument of `base` must be a string."),
+            },
+            Err(_) => None,
+        };
+        Ok(Base { module, inherits })
     }
 }
 
@@ -107,13 +121,51 @@ fn impl_create_exception(
     enum_name: &Ident,
     variant: &Variant,
     is_base: &bool,
+    inherits_spec: &Inherits,
 ) -> proc_macro2::TokenStream {
     let variant_name = &variant.ident;
-    let py_exception = &format_ident!("PyException");
-    let (variant_name, py_exc_name) = if *is_base { (enum_name, py_exception) } else { (variant_name, enum_name) };
+    let py_exception = &format_ident!("{}", inherits_spec.exception);
+    let (variant_name, py_exc_name) = if *is_base {
+        (enum_name, py_exception)
+    } else {
+        (variant_name, enum_name)
+    };
 
     quote! {
         create_exception!(#module_name, #variant_name, #py_exc_name);
+    }
+}
+
+fn impl_use_base_exc(inherits: &Inherits) -> proc_macro2::TokenStream {
+    if let Some(module) = &inherits.module {
+        let module_name = format_ident!("{}", module);
+        let exception_name = format_ident!("{}", inherits.exception);
+        quote! {
+            use self::#module_name::#exception_name;
+        }
+    } else {
+        quote! {}
+    }
+}
+
+fn get_inherit_spec(spec: &Vec<String>) -> Inherits {
+    let length = spec.len();
+    if length == 0 || length > 2 {
+        panic!("`inherits` argument of `base` must follow `MODULE.EXCEPTION` format.")
+    }
+
+    let [module, exception] = [&spec[0], &spec[1]];
+
+    Inherits {
+        exception: String::from(module),
+        module: Some(String::from(exception)),
+    }
+}
+
+fn get_default_inherit_spec() -> Inherits {
+    Inherits {
+        module: None,
+        exception: String::from("PyException"),
     }
 }
 
@@ -155,41 +207,74 @@ pub fn pyexc_macro(input: TokenStream) -> TokenStream {
             })
     });
 
-    let first_base = variants_with_base.nth(0);
+    let (base_variant, base) = variants_with_base
+        .nth(0)
+        .expect("There must be one base exception");
     let base_count = variants_with_base.count();
 
     if base_count > 1 {
         panic!("There can only be one base exception.")
     }
 
-    let (base_variant, base) = match first_base {
-        Some(item) => item,
-        None => panic!("There must be one base exception."),
-    };
-
     // Re-used as base exception's name
     let enum_name = item.ident;
-    let module_name = format_ident!("{}", match base.module.lit {
-        Lit::Str(litstr) => litstr.value(),
-        _ => panic!("`module` argument of `base` must be a string.")
-    });
+    let module_name = format_ident!(
+        "{}",
+        match base.module.lit {
+            Lit::Str(litstr) => litstr.value(),
+            _ => panic!("`module` argument of `base` must be a string."),
+        }
+    );
+
+    let inherits_spec: Inherits = base
+        .inherits
+        .map(|litstr| {
+            let spec = litstr;
+            let split: Vec<String> = spec.split('.').map(|item| String::from(item)).collect();
+            get_inherit_spec(&split)
+        })
+        .unwrap_or_else(get_default_inherit_spec);
 
     for (variant, format_attribute) in variants_with_format {
         let variant_name = &variant.ident;
         let is_base = variant_name == &base_variant.ident;
 
         exception_formats.push(match &variant.fields {
-            Fields::Unnamed(fields) => {
-                impl_unnamed_fields(&module_name, &enum_name, variant, fields, &format_attribute, &is_base)
-            }
-            Fields::Named(fields) => {
-                impl_named_fields(&module_name, &enum_name, variant, fields, &format_attribute, &is_base)
-            }
-            Fields::Unit => impl_unit(&module_name, &enum_name, variant, &format_attribute, &is_base),
+            Fields::Unnamed(fields) => impl_unnamed_fields(
+                &module_name,
+                &enum_name,
+                variant,
+                fields,
+                &format_attribute,
+                &is_base,
+            ),
+            Fields::Named(fields) => impl_named_fields(
+                &module_name,
+                &enum_name,
+                variant,
+                fields,
+                &format_attribute,
+                &is_base,
+            ),
+            Fields::Unit => impl_unit(
+                &module_name,
+                &enum_name,
+                variant,
+                &format_attribute,
+                &is_base,
+            ),
         });
 
-        python_exceptions.push(impl_create_exception(&module_name, &enum_name, variant, &is_base))
+        python_exceptions.push(impl_create_exception(
+            &module_name,
+            &enum_name,
+            variant,
+            &is_base,
+            &inherits_spec,
+        ))
     }
+
+    let base_exc_use = impl_use_base_exc(&inherits_spec);
 
     let tokens = quote! {
         use pyo3::PyErr;
@@ -198,6 +283,7 @@ pub fn pyexc_macro(input: TokenStream) -> TokenStream {
         mod #module_name {
             use pyo3::create_exception;
             use pyo3::exceptions::PyException;
+            #base_exc_use
 
             #(#python_exceptions)*
         }
